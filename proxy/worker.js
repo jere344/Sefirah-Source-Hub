@@ -95,6 +95,69 @@ function validTarget(raw) {
   return u;
 }
 
+
+// === Exploration v1 : première brique du futur navigateur Sefirah ===
+// Explore quelques pages publiques en HTML statique. N'exécute pas JavaScript.
+async function exploreSite(raw, cors) {
+  const first = validTarget(raw);
+  if (!first) return json({ error: 'URL refusée : seuls les sites HTTP(S) publics sur les ports standards sont autorisés.' }, 400, cors);
+  const seen = new Set(), queue = [first.href], pages = [], maxPages = 6;
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (compatible; SefirahSourceHub/2.0; +source-analyzer)',
+    'Accept': 'text/html,application/xhtml+xml,application/json;q=0.8,*/*;q=0.5',
+    'Accept-Language': 'fr,en;q=0.8'
+  };
+  while (queue.length && pages.length < maxPages) {
+    const requested = queue.shift();
+    if (seen.has(requested)) continue;
+    seen.add(requested);
+    let current = validTarget(requested), response = null;
+    try {
+      for (let hop = 0; hop <= 5; hop++) {
+        response = await fetch(current.href, { redirect: 'manual', headers, signal: AbortSignal.timeout(12000) });
+        if (response.status >= 300 && response.status < 400 && response.headers.get('location')) {
+          const next = validTarget(new URL(response.headers.get('location'), current.href).href);
+          if (!next) throw new Error('Redirection refusée par sécurité');
+          current = next; continue;
+        }
+        break;
+      }
+      const type = response.headers.get('content-type') || '';
+      if (!response.ok) { pages.push({ url: current.href, status: response.status, error: 'HTTP ' + response.status }); continue; }
+      if (!/(text\/html|application\/xhtml\+xml)/i.test(type)) {
+        pages.push({ url: current.href, status: response.status, contentType: type, note: 'Ressource non HTML' }); continue;
+      }
+      const html = (await response.text()).slice(0, 900000);
+      const title = (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [,''])[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 180);
+      const description = ((html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']*)/i) || html.match(/<meta[^>]+content=["']([^"']*)["'][^>]+name=["']description/i) || [,''])[1]).slice(0, 300);
+      const scripts = [...html.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)].map(m => { try { return new URL(m[1], current.href).href; } catch { return ''; } }).filter(Boolean).slice(0, 20);
+      const links = [...html.matchAll(/<a\b[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)].map(m => {
+        try { const u = new URL(m[1], current.href); if (u.origin !== first.origin || !/^https?:$/.test(u.protocol)) return null;
+          return { url: u.href.split('#')[0], text: m[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 100) };
+        } catch { return null; }
+      }).filter(x => x && x.url && x.text).slice(0, 80);
+      const signature = {
+        wordpress: /wp-content|wp-includes|wp-json/i.test(html),
+        madara: /wp-manga|manga-chapters-holder/i.test(html),
+        mangaThemesia: /mangathemesia|page-break|wp-manga/i.test(html),
+        nextjs: /__NEXT_DATA__|\/_next\//i.test(html),
+        graphql: /graphql/i.test(html),
+        jsonLd: /application\/ld\+json/i.test(html),
+        ajaxHints: /admin-ajax\.php|\bfetch\s*\(|XMLHttpRequest/i.test(html)
+      };
+      pages.push({ url: current.href, status: response.status, title, description, contentType: type, bytes: html.length, signature, scripts, links: links.slice(0, 35) });
+      const candidates = links.filter(x => x.url !== current.href && !seen.has(x.url));
+      const score = x => (/search|catalog|manga|novel|series|book|genre|category|latest|chapter/i.test(x.url + ' ' + x.text) ? 3 : 0) + (x.url.split('/').filter(Boolean).length <= 4 ? 1 : 0);
+      candidates.sort((a,b) => score(b)-score(a));
+      for (const x of candidates) { if (queue.length + pages.length >= maxPages) break; if (!queue.includes(x.url)) queue.push(x.url); }
+    } catch (e) { pages.push({ url: requested, error: String(e && e.message || e).slice(0, 180) }); }
+  }
+  const all = pages.map(p => p.signature || {}).reduce((a,b) => { for (const k of Object.keys(b)) a[k] = a[k] || b[k]; return a; }, {});
+  let engine = 'html-custom';
+  if (all.madara) engine = 'wordpress-madara'; else if (all.wordpress) engine = 'wordpress'; else if (all.nextjs) engine = 'nextjs';
+  return json({ version: 1, mode: 'static-html', javascriptExecuted: false, requestedUrl: first.href, engineGuess: engine, signatures: all, pages, limits: ['Exploration limitée à 6 pages publiques.', 'JavaScript non exécuté dans cette première version.', 'Aucune connexion, CAPTCHA ou protection anti-bot contournée.'] }, 200, cors);
+}
+
 async function relay(req, env, u, cors) {
   if (!env.RELAY) return json({ error: 'Relais non configuré : ajoute un binding KV nommé RELAY au Worker.' }, 501, cors);
   if (u.pathname === '/relay/send') {
@@ -141,6 +204,10 @@ export default {
 
     const u = new URL(req.url);
     if (u.pathname.startsWith('/relay/')) return relay(req, env, u, cors);
+    if (u.pathname === '/explore') {
+      if (req.method !== 'GET') return json({ error: 'method_not_allowed' }, 405, cors);
+      return exploreSite(u.searchParams.get('url') || '', cors);
+    }
 
     if (u.pathname === '/ai') {
       const hasAI = providers(env).length > 0;
