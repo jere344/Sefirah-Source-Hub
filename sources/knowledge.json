@@ -1,6 +1,6 @@
 {
  "version": 1,
- "updated": "2026-11-14",
+ "updated": "2026-11-15",
  "examples": [
   {
    "id": "wordrain",
@@ -557,6 +557,49 @@
     "cont": "text-left",
     "search": "/?s={q}&post_type=wp-manga"
    }
+  },
+  {
+   "id": "sushiscan",
+   "moteur": "mangastream",
+   "type": "manga",
+   "lang": "fr",
+   "signature": "ts_reader.run",
+   "structure": "Thème WordPress MangaThemesia (famille MangaStream) en français : catalogue /catalogue/?order=popular&page=N (genres : /catalogue/?genre[]=<slug>), fiche /catalogue/<slug>/, chapitre /<slug>-chapitre-N/ ; liste complète des chapitres ET des volumes dans #chapterlist (numéro dans span.chapternum), du plus récent au plus ancien ; images du chapitre dans le lecteur HTML et dans le script ts_reader.run({... \"images\":[...] ...}) ; synopsis dans og:description (souvent tronquée).",
+   "pieges": [
+    "Images du chapitre en double : lire la liste du HTML ET celle du script ts_reader (\"images\":[…]) et garder la plus complète (le HTML peut n'en donner que 1 à 2 en lazy-load)",
+    "Chapitres : prendre uniquement les liens de #chapterlist (le reste de la page contient des liens de téléchargement et d'autres séries) ; exclure les liens avec « download », « ? » ou « # »",
+    "#chapterlist est du plus récent au plus ancien : le retourner si le premier numéro est plus grand que le dernier",
+    "Couvertures en lazy-load : lire data-src / data-lazy-src avant src, ignorer les pixels vides",
+    "Toujours envoyer User-Agent mobile et Referer = adresse du site, sinon les images peuvent être refusées",
+    "og:description est souvent tronquée (« … ») : chercher le synopsis complet dans la page avant de s'en contenter",
+    "Pas d'avis ni de commentaires lisibles : garder hasReviews = false",
+    "Sur un site MangaThemesia, ne pas chercher /manga/ ni /series/ : le préfixe de liste réel est /catalogue/"
+   ],
+   "config": {
+    "type": "manga",
+    "list": "/catalogue/",
+    "chap": "chapitre-",
+    "search": "/?s={q}"
+   },
+   "genres_fr": [
+    "romance",
+    "school-life",
+    "action",
+    "aventure",
+    "comedie",
+    "drame",
+    "fantastique",
+    "histoires-courtes",
+    "fantasy",
+    "nekketsu",
+    "surnaturel",
+    "historique",
+    "horreur",
+    "tragique",
+    "sport",
+    "shojo-ai",
+    "mystere"
+   ]
   }
  ],
  "lecons": [
@@ -674,6 +717,11 @@
    "symptome": "_next/image|couverture.*(None|null|undefined)|img/None",
    "cause": "Couverture passée par l'optimiseur Next.js (/_next/image?url=…) ou valeur vide (None, null).",
    "solution": "Décoder le paramètre url pour retrouver l'image d'origine ; ignorer les adresses se terminant par none/null/undefined ; en dernier recours lire og:image de la fiche (peu de fiches, pour rester rapide)."
+  },
+  {
+   "symptome": "ts_reader|MangaThemesia|chapterlist|chapternum|Aucune image|no_pages|pages? manquantes?",
+   "cause": "Site MangaThemesia/MangaStream : les images du chapitre sont dans le HTML et/ou dans le script ts_reader.run, et les chapitres dans #chapterlist.",
+   "solution": "Lire les <img> du lecteur (data-src avant src) ET le tableau \"images\" de ts_reader.run({…}), garder la liste la plus longue ; pour les chapitres, parcourir uniquement #chapterlist (span.chapternum pour le titre) et inverser l'ordre s'il est décroissant ; envoyer Referer = site."
   }
  ]
 }
