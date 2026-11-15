@@ -38,7 +38,7 @@ h2.st{font-size:16px;margin:16px 0 4px}h2.st span{display:inline-grid;place-item
 <div class="card"><h2 style="margin:0 0 4px">Créer une source à partir d'une adresse</h2>
 <p style="margin:0 0 8px;color:var(--m)">Colle l'adresse du site : l'IA lit l'accueil, une fiche et un chapitre, devine les réglages, génère le fichier <code>.lua</code> et le teste.</p>
 <p style="margin:0 0 8px"><small>Les sources sans problème sont ajoutées automatiquement au catalogue, marquées « non vérifié ».</small></p>
-<div class="row"><input id="cu" type="url" placeholder="https://exemple.com" aria-label="Adresse du site" autocomplete="off" autocapitalize="off" spellcheck="false"><button class="b" id="cai">✨ Générer le .lua</button></div>
+<div class="row"><input id="cu" type="url" placeholder="https://exemple.com" aria-label="Adresse du site" autocomplete="off" autocapitalize="off" spellcheck="false"><button class="b" id="cai">✨ Générer le .lua</button><button class="b s" type="button" id="cjs" title="Ouvre la page dans un vrai navigateur (JavaScript exécuté) et compare avec le HTML brut">🧭 Voir avec JavaScript</button></div><div id="jsout"></div>
 <details class="help" id="batch"><summary><b>🔎 Tester plusieurs sites d'un coup</b></summary>
 <p style="margin:8px 0"><small>Colle une liste d'adresses (une par ligne), ou l'adresse d'un fichier .json / .txt qui liste des sites (ex. liste de plugins) : le Hub en extrait les sites. Le bouton « 🔗 Trouver les adresses » affiche tous les sites trouvés sans les tester (tu peux les copier ou les mettre dans la zone). Le Hub analyse chaque site l'un après l'autre et te donne la liste de ceux qui marchent.</small></p>
 <textarea id="bl" style="min-height:90px;width:100%" placeholder="https://site1.com&#10;https://site2.com"></textarea>
@@ -1560,6 +1560,57 @@ function extractApiRoutes(html){
  const re2=/"(?:apiBase|apiUrl|baseUrl|searchUrl|chaptersUrl)"\s*:\s*"(\/[^"]{2,100})"/g;
  while((m=re2.exec(html)))out.add(m[1]);
  return [...out].slice(0,12)}
+// ---------- 🧭 Étape 2 : vrai navigateur JavaScript (route /render du Worker)
+// IMPORTANT : le plugin Sefirah n'exécute PAS JavaScript sur la liseuse. Le HTML rendu sert à COMPRENDRE le site (et à repérer qu'il faut une API), jamais à remplacer le HTML brut dans les tests.
+let RENDER_STATE=null,RENDER_N=0,RENDER_T=0;
+async function renderOn(){if(RENDER_STATE!==null)return RENDER_STATE;try{RENDER_STATE=!!(await (await fetch(PROXY+'/render?check=1')).json()).render}catch{RENDER_STATE=false}return RENDER_STATE}
+async function renderPage(url,wait){
+ if(RENDER_N>=15)return {err:'cap',msg:'15 pages rendues pour cette session : recharge la page du Hub pour continuer (le plan gratuit Cloudflare est limité).'};
+ const gap=RENDER_T+10500-Date.now();if(gap>0)await new Promise(z=>setTimeout(z,gap));
+ let r,raw;
+ try{r=await fetch(PROXY+'/render?url='+encodeURIComponent(url)+'&wait='+encodeURIComponent(wait||'networkidle2'),{signal:AbortSignal.timeout?AbortSignal.timeout(70000):undefined});raw=await r.text()}
+ catch(e){return {err:'net',msg:'Worker injoignable ou délai dépassé.'}}
+ RENDER_T=Date.now();
+ if(!r.ok){let m=raw;try{m=JSON.parse(raw).error||raw}catch{}return {err:r.status==501?'not_configured':r.status==429?'limit':'http',status:r.status,msg:String(m).slice(0,240)}}
+ RENDER_N++;if(r.headers.get('X-Cache')=='HIT')RENDER_N--;
+ return {status:200,text:raw,rendered:true,cached:r.headers.get('X-Cache')=='HIT'}}
+const renderMsg=rr=>rr.err=='not_configured'?"Le navigateur JavaScript n'est pas activé sur ton Worker. Dans Cloudflare : Workers & Pages › ton Worker › Settings › Variables and Secrets : ajoute CF_ACCOUNT_ID (ton identifiant de compte) et CF_API_TOKEN (un jeton API avec la permission « Browser Rendering - Edit »), puis clique sur Deploy.":(rr.msg||'Navigateur JavaScript indisponible.');
+function jsCompare(sHtml,rHtml,org){
+ const one=h=>{const d=dom(h),L=lnk(d,org);d.querySelectorAll('script,style,noscript').forEach(e=>e.remove());
+  return {liens:L.length,texte:(d.body?d.body.textContent:'').replace(/\s+/g,' ').trim().length,modeles:patterns(L).slice(0,4),
+   liensListe:L.slice(0,30).map(x=>[x[0].slice(0,70),x[1].slice(0,25)]),
+   titres:[...d.querySelectorAll('h1,h2,h3')].slice(0,6).map(x=>(x.textContent||'').trim().slice(0,50)).filter(Boolean)}};
+ const s=one(sHtml),r=one(rHtml);
+ const spa=(r.liens-s.liens>=8)||(r.texte>=1500&&r.texte>=s.texte*3)||(!s.modeles.length&&r.modeles.length>0);
+ return {s,r,spa}}
+function jsReportHtml(c){
+ if(!c)return '';
+ if(c.err)return `<div class="card" style="border-color:var(--a)"><b>🧭 Navigateur JavaScript</b><p class="w">⚠ ${H(c.err)}</p></div>`;
+ const row=(t,x)=>`<tr><td>${t}</td><td>${x.liens}</td><td>${x.texte}</td><td>${x.modeles.length?x.modeles.map(m=>'<code>'+H(m.modele)+'</code> ×'+m.nb).join('<br>'):'—'}</td></tr>`;
+ return `<details class="card" open style="border-color:var(--a)"><summary><b>🧭 Navigateur JavaScript — ${c.spa?'ce site a besoin de JavaScript':'le HTML brut suffit'}</b></summary>
+<div style="overflow-x:auto"><table><tr><th></th><th>Liens</th><th>Texte visible (car.)</th><th>Modèles de liens répétés</th></tr>${row('Sans JavaScript',c.s)}${row('Avec JavaScript',c.r)}</table></div>
+${c.spa?`<p class="w">⚠ Sans JavaScript la page montre ${c.s.liens} lien(s) ; avec JavaScript, ${c.r.liens}. Sefirah ne peut pas exécuter JavaScript sur la liseuse : la page rendue sert à comprendre le site, pas à le lire. Pour que la source marche sur Kobo, il faut une API JSON utilisée par le site (étape 3 de la feuille de route).</p>`:`<p class="ok">✔ Le HTML brut contient déjà l'essentiel : pas besoin de navigateur pour ce site.</p>`}
+${c.r.titres.length?'<small>Titres vus après rendu : '+c.r.titres.map(H).join(' · ')+'</small><br>':''}
+<small>Le navigateur est identifié comme robot : aucune protection (CAPTCHA, anti-bot, connexion) n'est contournée. Plan gratuit Cloudflare : 10 min de navigateur par jour.</small></details>`}
+async function jsCheck(){
+ const out=$('#jsout'),btn=$('#cjs');let u=$('#cu').value.trim();
+ if(!u){out.innerHTML='<p class="w">Colle d\'abord l\'adresse du site.</p>';return}
+ if(!/^https?:\/\//i.test(u))u='https://'+u;
+ let org;try{org=new URL(u).origin}catch{out.innerHTML='<p class="e">Adresse invalide.</p>';return}
+ btn.disabled=true;
+ try{
+  out.innerHTML='<p><span class="sp"></span> Lecture de la page sans JavaScript…</p>';
+  const st=await getPage(u);
+  if(blocked(st))throw new Error('Site protégé (Cloudflare/CAPTCHA) : non contourné.');
+  if(!(await renderOn()))throw new Error(renderMsg({err:'not_configured'}));
+  out.innerHTML='<p><span class="sp"></span> Ouverture dans un vrai navigateur (10 à 40 s)…</p>';
+  const rr=await renderPage(u,'networkidle2');
+  if(rr.err)throw new Error(renderMsg(rr));
+  if(blocked(rr))throw new Error('Site protégé (Cloudflare/CAPTCHA) : non contourné.');
+  out.innerHTML=jsReportHtml(jsCompare(st.text,rr.text,org))
+ }catch(e){out.innerHTML='<p class="e">✘ '+H(e.message)+'</p>'}
+ finally{btn.disabled=false}}
+$('#cjs').onclick=jsCheck;
 async function analyzeHome(u){
  let p=await getPage(u); // Si le site bloque (404, 403, page vide), on tente de le lire via r.jina.ai if (p.status >= 400 || p.text.length < 300) {   try {     const jina = await getPage('https://r.jina.ai/' + u);     if (jina.status < 400 && jina.text.length > 500) {       p = jina;       console.log("Page lue via r.jina.ai avec succès");     }   } catch(e) { console.warn("Échec r.jina.ai", e); } }
  if(blocked(p))throw new Error('Site protégé (Cloudflare/CAPTCHA) : non contourné.');
@@ -2207,7 +2258,7 @@ function renderResult(tests,info,openAdv){LASTT=tests;
  const bwhy=chkBrowse(CFG.browse,c.base).why;
  $('#cout').innerHTML=`<div class="card"><div class="sh">${ico(c.base,32)}<div><b>${H(c.name)}</b><br><small>${H(c.base.replace(/^https?:\/\//,''))}</small></div><button class="b s" id="icb" style="margin-left:auto">⬇ Icône</button></div><p class="${k}" id="vd" style="margin-top:0"><b>${H(msg)}</b></p>
  ${miss.map(m=>`<span class="fx">🛠 Pour trouver ${H(MISS[m][0])} : ${H(MISS[m][1])}</span>`).join('')}
- <small>${why}</small>${c.engine&&ENGINES[c.engine]?`<p style="margin:6px 0">⚙ Moteur détecté : <b>${H(ENGINES[c.engine].label)}</b> — modèle éprouvé appliqué.</p>`:''}${info.aiWhy?fx(info.aiWhy):''}${explorationHtml(info.exploration)}${apisHtml(info.apis)}${fixHtml}${loopHtml(lp)}${bad.length&&info.ai?'<div class="row"><button class="b s" id="lpb">🔁 Relancer la correction automatique</button></div><div id="lpm"></div>':''}${propHtml()}
+ <small>${why}</small>${c.engine&&ENGINES[c.engine]?`<p style="margin:6px 0">⚙ Moteur détecté : <b>${H(ENGINES[c.engine].label)}</b> — modèle éprouvé appliqué.</p>`:''}${info.aiWhy?fx(info.aiWhy):''}${explorationHtml(info.exploration)}${info.js?jsReportHtml(info.js):''}${apisHtml(info.apis)}${fixHtml}${loopHtml(lp)}${bad.length&&info.ai?'<div class="row"><button class="b s" id="lpb">🔁 Relancer la correction automatique</button></div><div id="lpm"></div>':''}${propHtml()}
  <div class="row" style="margin-top:10px"><button class="b" id="dlb">⬇ Télécharger ${H(g.id)}.lua</button><button class="b" id="tsb">📱 Tester sur liseuse</button><button class="b s" id="cpb">Copier le code</button><button class="b s" id="vwb">Voir le code</button></div>
  <div id="rcv"></div><div id="ctl"></div>
  <details class="help" open><summary>Détail des tests (${tests.length})</summary><ul id="tl">${tests.map((r,i)=>`<li class="${r[0]}">${ic[r[0]]} ${H(r[1])}${r[0]=='e'||r[0]=='w'?`<div class="rep" data-ri="${i}"><button class="b s" type="button" data-rep="${i}">🪄 Réparer</button></div>`:''}${r[0]=='ok'?'':fx(r[1],r[0]=='e')}</li>`).join('')}</ul></details>
@@ -2604,6 +2655,14 @@ async function generate(){
   say("Lecture de la page d'accueil…");
 const {p:hp,d:hd,url:homeUrl}=await analyzeHome(u);
 if(homeUrl&&homeUrl!==u){u=homeUrl;$('#cu').value=u}
+  let jsr=null;
+  try{const sl0=lnk(hd,org);
+   if(sl0.length<12&&!patterns(sl0).length&&await renderOn()){
+    say('Page presque vide sans JavaScript : ouverture dans un vrai navigateur…');
+    const rr=await renderPage(u,'networkidle2');
+    if(rr&&!rr.err&&!blocked(rr)){const c=jsCompare(hp.text,rr.text,org);if(c.spa)jsr={...c,url:u}}
+    else if(rr&&rr.err&&rr.err!='not_configured')jsr={err:renderMsg(rr),url:u}}
+  }catch(e){console.warn('rendu JS',e)}
 say("Recherche d'API cachées…");let apis=[];try{apis=await probeApis(org,hp.text,hd)}catch{}
   const eng=detectEngine(hp.text)||(apis.some(a=>a.id=='wpjson')?'wpjson':'');
   const platform=detectPlatform(hp.text);
@@ -2617,6 +2676,7 @@ say("Recherche d'API cachées…");let apis=[];try{apis=await probeApis(org,hp.t
   // filtres vus sur l'accueil (selects, cases, liens répétés) : proposés à l'utilisateur, jamais ajoutés sans son choix (hors IA)
   try{DET=detectFilters(hd,org,u);PROP={list:DET.list.slice(),browse:DET.browse}}catch{}
   const S={site:org,plateforme:platform,apis:apis.map(a=>({type:a.id,url:a.url,note:a.note})),apiHints:CFG.apiHints||[],accueil:{url:u,formulaires:[...hd.querySelectorAll('form')].slice(0,3).map(f=>f.outerHTML.replace(/\s+/g,' ').slice(0,500)),liens:hl.slice(0,30),filtres:DET.list.map(f=>({key:f.key,label:f.label,multi:f.multi,nb:f.options.length,choix:f.options.slice(0,15).map(x=>x.label)})),adresseListeVue:DET.browse}};
+  if(jsr&&!jsr.err)S.rendu={note:'Liens visibles seulement avec JavaScript. Le plugin n exécute pas JavaScript : ne déduis list, chap ou search que de liens présents dans accueil ou oeuvre.',liens:jsr.r.liensListe,modeles:jsr.r.modeles};
   if(disc&&disc.ok)S.decouverte={liste:disc.list,chapitres:disc.chap,type:disc.kind,verifie:disc.found||'ok'};
   const w=hl.find(([p])=>lp0&&p.includes(lp0)&&p.split('/').filter(Boolean).length>=2);
   if(w&&!(disc&&disc.ok&&disc.chap)){try{
@@ -2647,7 +2707,7 @@ say("Recherche d'API cachées…");let apis=[];try{apis=await probeApis(org,hp.t
   {const hr=await heurLoop(t,say);t=hr.t;loop=hr.hist}
   if(ai&&t.some(x=>x[0]=='e')){const r=await fixLoop(t,say);t=r.t;loop=loop.concat(r.hist||[]);if(r.aiWhy)aiWhy=r.aiWhy}
   if(ai&&AI_LAST.provider)aiWhy='IA utilisée : '+AI_LAST.provider+' — '+AI_LAST.model+(aiWhy?' · '+aiWhy:'');
-  o.innerHTML='';renderResult(t,{ai,aiWhy,loop,apis});
+  o.innerHTML='';renderResult(t,{ai,aiWhy,loop,apis,exploration,js:jsr});
  }catch(e){o.innerHTML=`<p class="e">✘ ${H(e.message)}</p>${fx(e.message,true)}`;
   try{const u=new URL($('#cu').value.trim());CFG.name=CFG.name||u.hostname.replace(/^www\./,'');renderResult([['e',e.message]],{ai:false,aiWhy:''})}catch{}}
  finally{btn.disabled=false}}
