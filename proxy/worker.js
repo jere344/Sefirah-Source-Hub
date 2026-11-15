@@ -116,7 +116,7 @@ export default {
       if (!prompt) return json({ error: 'prompt_manquant' }, 400, cors);
 
       // === EXEMPLES FEW-SHOT : 2 à 3 sources proches fournies par le Hub (HTML → config qui marche) ===
-      const examples = Array.isArray(body.examples) ? body.examples.slice(0, 3) : [];
+      const examples = Array.isArray(body.examples) ? body.examples.slice(0, 5) : [];
       let exBlock = '';
       if (examples.length) {
         exBlock = '\n\n=== EXEMPLES DE SOURCES QUI MARCHENT (HTML → config) ===\n'
@@ -136,7 +136,7 @@ export default {
       }
 
       // === LEÇONS DE RÉPARATION : « symptôme → cause → solution » déjà vues sur de vraies sources ===
-      const lessons = Array.isArray(body.lessons) ? body.lessons.slice(0, 3) : [];
+      const lessons = Array.isArray(body.lessons) ? body.lessons.slice(0, 5) : [];
       let leBlock = '';
       if (lessons.length) {
         leBlock = '\n\n=== LEÇONS DE RÉPARATION (cas déjà résolus) ===\n'
