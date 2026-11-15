@@ -12,14 +12,20 @@ const PRIVATE_HOST = /(^localhost$|\.localhost$|\.local$|\.internal$|^127\.|^10\
 
 // === CHAÎNE D'IA : essaie chaque fournisseur dans l'ordre, passe au suivant en cas d'erreur / limite atteinte ===
 // Secrets facultatifs : GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, CEREBRAS_API_KEY. Modèles modifiables : GEMINI_MODEL, GROQ_MODEL, OPENROUTER_MODEL, CEREBRAS_MODEL.
-const MAX_OUT = 4000;
+const MAX_OUT = 8000; // Gemini 2.5 compte sa « réflexion » dans ce plafond : 4000 coupait parfois le JSON en plein milieu
 async function openaiCompat(url, key, model, messages, extra) {
-  const r = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
-    body: JSON.stringify({ model, messages, max_tokens: MAX_OUT, temperature: 0.2, ...(extra || {}) }),
-    signal: AbortSignal.timeout(45000)
-  });
+  // température 0 : on veut une extraction fidèle, pas de la créativité. 1 nouvel essai si limite de débit (429) ou panne passagère (503).
+  let r;
+  for (let n = 0; n < 2; n++) {
+    r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
+      body: JSON.stringify({ model, messages, max_tokens: MAX_OUT, temperature: 0, ...(extra || {}) }),
+      signal: AbortSignal.timeout(45000)
+    });
+    if ((r.status === 429 || r.status === 503) && n === 0) { try { await r.body?.cancel(); } catch {} await new Promise(z => setTimeout(z, 2500)); continue; }
+    break;
+  }
   if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + (await r.text()).slice(0, 100));
   const j = await r.json();
   const t = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
@@ -32,7 +38,7 @@ function providers(env) {
   if (env.CEREBRAS_API_KEY) { const model = env.CEREBRAS_MODEL || 'llama-3.3-70b'; list.push({ name: 'Cerebras', model, run: (m, e) => openaiCompat('https://api.cerebras.ai/v1/chat/completions', e.CEREBRAS_API_KEY, model, m) }); }
   if (env.OPENROUTER_API_KEY) { const model = env.OPENROUTER_MODEL || 'meta-llama/llama-3.3-70b-instruct:free'; list.push({ name: 'OpenRouter', model, run: (m, e) => openaiCompat('https://openrouter.ai/api/v1/chat/completions', e.OPENROUTER_API_KEY, model, m) }); }
   if (env.AI) { const model = env.AI_MODEL || DEFAULT_MODEL; list.push({ name: 'Workers AI', model, run: async (m, e) => {
-    const res = await e.AI.run(model, { messages: m, max_tokens: 2200, temperature: 0.1 });
+    const res = await e.AI.run(model, { messages: m, max_tokens: 3000, temperature: 0 });
     let a = res && (res.response ?? res.output_text ?? res.text);
     if (a && typeof a === 'object') a = JSON.stringify(a);
     return typeof a === 'string' ? a.trim() : '';
@@ -49,6 +55,26 @@ function validJsonAnswer(raw) {
   const a = t.indexOf('{'), b = t.lastIndexOf('}');
   if (a < 0 || b <= a) return false;
   try { JSON.parse(t.slice(a, b + 1)); return true; } catch { return false; }
+}
+
+// Vérifie la FORME de la réponse selon le mode demandé par le Hub (source-analysis | fix | repair).
+// Avant, tout JSON valide était accepté, même « {} » ou un objet sans les champs attendus : le Hub recevait alors une réponse vide
+// et n'essayait pas le fournisseur suivant. Renvoie '' si la forme est bonne, sinon la raison du refus.
+const AN_KEYS = ['name', 'lang', 'type', 'search', 'list', 'chap', 'cont', 'img', 'rev', 'filters', 'browse'];
+function shapeProblem(raw, mode) {
+  let t = String(raw || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, ''), o = null;
+  try { o = JSON.parse(t); } catch { const a = t.indexOf('{'), b = t.lastIndexOf('}'); try { o = JSON.parse(t.slice(a, b + 1)); } catch {} }
+  if (!o || typeof o !== 'object' || Array.isArray(o)) return 'pas un objet JSON';
+  if (mode === 'source-analysis' || mode === 'fix') {
+    const miss = AN_KEYS.filter(k => !(k in o));
+    if (miss.length > 5) return 'champs manquants (' + miss.slice(0, 4).join(', ') + '…)';
+    if (o.type && o.type !== 'novel' && o.type !== 'manga') return 'type invalide';
+    if ('filters' in o && o.filters != null && !Array.isArray(o.filters)) return 'filters doit être une liste';
+    for (const k of ['name', 'lang', 'search', 'list', 'chap', 'cont', 'img', 'browse']) if (k in o && o[k] != null && typeof o[k] !== 'string') return k + ' doit être du texte';
+  } else if (mode === 'repair') {
+    if (typeof o.cause !== 'string' || !Array.isArray(o.reparations)) return 'cause ou reparations absents';
+  }
+  return '';
 }
 
 function json(data, status, cors) {
@@ -123,7 +149,7 @@ export default {
       if (!hasAI) return json({ error: 'Aucune IA configurée : ajoute GEMINI_API_KEY (ou GROQ_API_KEY, OPENROUTER_API_KEY, CEREBRAS_API_KEY) ou un binding Workers AI nommé AI.' }, 501, cors);
       let body;
       try { body = await req.json(); } catch { return json({ error: 'JSON invalide' }, 400, cors); }
-      const system = typeof body.system === 'string' ? body.system.slice(0, 5000) : '';
+      const system = typeof body.system === 'string' ? body.system.slice(0, 14000) : '';
       const prompt = typeof body.prompt === 'string' ? body.prompt.slice(0, 24000) : '';
       if (!prompt) return json({ error: 'prompt_manquant' }, 400, cors);
 
@@ -169,6 +195,8 @@ export default {
           if (!text) { errors.push(p.name + ' : réponse vide'); continue; }
           // Le navigateur attend du JSON : une réponse mal formée ne doit pas empêcher l'essai du modèle suivant.
           if (!validJsonAnswer(text)) { errors.push(p.name + ' : JSON invalide'); continue; }
+          const sp = shapeProblem(text, typeof body.mode === 'string' ? body.mode : '');
+          if (sp) { errors.push(p.name + ' : réponse inutilisable (' + sp + ')'); continue; }
           return json({ text, provider: p.name, model: p.model || 'modèle non indiqué' }, 200, cors);
         } catch (e) {
           errors.push(p.name + ' : ' + String(e && e.message || e).slice(0, 120));
