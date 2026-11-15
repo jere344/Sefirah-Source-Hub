@@ -600,6 +600,29 @@
     "shojo-ai",
     "mystere"
    ]
+  },
+  {
+   "id": "weebcentral",
+   "moteur": "htmx",
+   "type": "manga",
+   "lang": "en",
+   "signature": "hx-get",
+   "structure": "Site rendu avec HTMX : les listes sont des morceaux de HTML à part. Recherche et catalogue : /search/data?text=&sort=&order=&official=Any&display_mode=Full%20Display&limit=32&offset=N (page 1 = offset 0, page vide = fin) ; fiche /series/<id>/<slug> ; tous les chapitres : /series/<id>/full-chapter-list (du plus récent au plus ancien) ; chapitre /chapters/<id> ; images : /chapters/<id>/images?is_prev=False&current_page=1&reading_style=long_strip (balises <img alt=\"Page N\">). Filtres du site : sort, order, status, type, official, anime, adult, genres inclus (included_tag) et exclus (excluded_tag).",
+   "pieges": [
+    "La fiche ne montre que les derniers chapitres : charger /series/<id>/full-chapter-list, puis le retourner (plus ancien d'abord)",
+    "La page d'un chapitre ne contient aucune image : charger /chapters/<id>/images?… et lire les <img alt=\"Page N\"> sans attribut x-show",
+    "Les identifiants de chapitre sont des codes aléatoires : ne pas trier d'après l'adresse, seulement d'après le numéro du libellé",
+    "Couvertures : l'alt de l'image est « <Titre> cover » (enlever le mot final) ; à défaut, og:image de la fiche (8 fiches au maximum pour rester rapide)",
+    "og:description n'est qu'une phrase marketing (« Read … online for free ») : lire le bloc Description de la fiche",
+    "Décoder les entités HTML (&#x27;, &amp;, &eacute;…) dans les titres et résumés avant de les afficher",
+    "Envoyer un User-Agent mobile et Referer = adresse du site",
+    "Adresses partielles reprises de projets tiers et pas confirmées sur une liseuse : à vérifier avant de les réutiliser ailleurs"
+   ],
+   "config": {
+    "type": "manga",
+    "list": "/series/",
+    "chap": "/chapters/"
+   }
   }
  ],
  "lecons": [
@@ -732,6 +755,11 @@
    "symptome": "Madara|wp-manga|manga-genre|m_orderby",
    "cause": "Sites Madara : la liste passe par /manga/?m_orderby=…&page ou /manga-genre/<genre>/page/N/ ; une valeur « all » retire le morceau d'adresse.",
    "solution": "Utiliser /manga/?m_orderby={tri} (liste par défaut) ; pour un genre, /manga-genre/{genre}/ ; vérifier qu'au moins une œuvre revient sans filtre."
+  },
+  {
+   "symptome": "htmx|hx-get|hx-trigger|full-chapter-list|Fiche : aucun chapitre|Aucune image|no_pages|chapter_unreachable",
+   "cause": "Le site charge ses listes par morceaux de HTML à part (HTMX) : la fiche ne contient que les derniers chapitres et la page d'un chapitre ne contient aucune image.",
+   "solution": "Chercher dans le HTML les attributs hx-get / hx-trigger, ouvrir ces adresses à part (ex. /series/<id>/full-chapter-list pour tous les chapitres, /chapters/<id>/images?… pour les images) et lire le HTML qu'elles renvoient."
   }
  ]
 }
