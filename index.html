@@ -1997,6 +1997,14 @@ async function runTests(c){
   [...new Set([...tpl.matchAll(/\{([\w-]+)\}/g)].map(m=>m[1]))].filter(k=>!known.has(k)).forEach(k=>add('w','Filtres : l\'adresse contient {'+k+'} qui ne correspond à aucun filtre'));
   bw&&!bw.includes('{page}')&&add('w','Filtres : l\'adresse de liste n\'a pas de {page} (seule la 1re page sera chargée)');
   const sel={};fl.forEach(f=>sel[f.key]=f.default);
+  // page ouverte au départ par « Parcourir » (aucun filtre choisi) : c'est celle que l'aperçu charge en premier
+  if(bw&&!c.apiList){const u0=expandUrl(bw,sel,'',1,joinOf(fl));
+   try{const p0=await getPage(u0);
+    if(blocked(p0))add('e','Parcourir : la liste par défaut est protégée (anti-bot) et ne s\'ouvre pas ('+u0+')');
+    else if(p0.status>=400)add('e','Parcourir : la liste par défaut répond HTTP '+p0.status+' ('+u0+')');
+    else{const d0=dom(p0.text),n0=window.__listItems?window.__listItems(d0,c).length:new Set(links(d0,list).map(a=>normP(a.getAttribute('href')))).size;
+     n0?add('ok','Parcourir : la liste par défaut renvoie '+n0+' œuvre(s)'):add('e','Parcourir : la liste par défaut ne renvoie aucune œuvre reconnue ('+u0+')')}}
+   catch(e){add('e','Parcourir : la liste par défaut est injoignable ('+e.message+')')}}
   const f=fl.find(f=>tpl.includes('{'+f.key+'}')&&f.options.some(o=>o.id&&o.id!='all'&&o.id!=f.default));
   if(!f){add('s','Filtres : aucun choix différent du choix par défaut à tester');return}
   const o=f.options.find(o=>o.id&&o.id!='all'&&o.id!=f.default);sel[f.key]=o.id;
@@ -2138,6 +2146,17 @@ const propHtml=()=>{if(!PROP.list.length)return '';
 function readAdv(){const g=id=>document.getElementById(id);if(!g('a_name'))return;const pe=CFG.engine;const v=id=>g(id).value.trim();
  CFG={...CFG,name:v('a_name'),lang:v('a_lang'),type:v('a_type'),search:v('a_search'),list:v('a_list'),chap:v('a_chap'),cont:v('a_cont'),img:v('a_img'),rev:v('a_rev')=='1',next:v('a_next')=='1',nkNovel:v('a_nkn'),nkChap:v('a_nkc'),nkPara:v('a_nkp'),nkText:v('a_nkt'),nkContent:v('a_nkx'),apiChap:v('a_apic'),apiSearch:v('a_apis'),filters:readFilters(),browse:v('a_browse'),rvo:g('a_rvo')?v('a_rvo'):CFG.rvo,apiList:g('a_apil')?v('a_apil'):CFG.apiList,engine:g('a_eng')?v('a_eng'):CFG.engine};if(CFG.engine&&CFG.engine!=pe)applyEngine(CFG.engine)}
 // un site n'est « bon » que si on a vraiment lu des œuvres ET un chapitre (sinon les tests « passent » à vide)
+// l'aperçu sur liseuse a échoué : le verdict ne peut plus dire « tout est bon »
+function pvFail(msg){
+ const tmp=document.createElement('div');tmp.innerHTML=String(msg||'');
+ const m=(tmp.textContent||'').replace(/^[✘✔⚠\s]+/,'').trim()||'erreur inconnue',line='Aperçu liseuse : '+m;
+ if(Array.isArray(LASTT)&&!LASTT.some(x=>x[1]==line))LASTT.push(['e',line]);
+ const v=document.getElementById('vd');
+ if(v){v.className='e';v.innerHTML='<b>✘ L\'aperçu sur liseuse échoue : '+H(m)+' Ce fichier n\'est pas bon tel quel.</b>'}
+ const ul=document.getElementById('tl');
+ if(ul&&!ul.querySelector('[data-pv]'))ul.insertAdjacentHTML('beforeend','<li class="e" data-pv="1">✘ '+H(line)+'</li>');
+ const sm=ul&&ul.closest('details')&&ul.closest('details').querySelector('summary');
+ if(sm&&Array.isArray(LASTT))sm.textContent='Détail des tests ('+LASTT.length+')'}
 function hasProof(t){return t.some(x=>x[0]=='ok'&&/^(Accueil : \d|Recherche : \d|Fiche : titre|Next\.js : (fiche|API))/.test(x[1]))&&t.some(x=>x[0]=='ok'&&/^Lecture/.test(x[1]))}
 function renderResult(tests,info,openAdv){LASTT=tests;
  const c=cfg(),g=genLua(c),bad=tests.filter(t=>t[0]=='e'),miss=[];
@@ -2146,21 +2165,22 @@ function renderResult(tests,info,openAdv){LASTT=tests;
  if(!c.list)miss.push('list');
  if(!c.chap&&!c.next)miss.push('chap');
  if(c.type=='novel'&&!c.cont&&!c.next)miss.push('cont');
- const noProof=!miss.length&&!bad.length&&!hasProof(tests),k=miss.length?'e':(bad.length||noProof)?'w':'ok',ic={ok:'✔',w:'⚠',e:'✘',s:'⏭'};
+ const noProof=!miss.length&&!bad.length&&!hasProof(tests),unv=!miss.length&&!bad.length&&!noProof&&tests.some(t=>t[0]=='w'&&/^Filtres : (site protégé|aucune adresse de liste|avec .* identique)/.test(t[1])),k=miss.length?'e':(bad.length||noProof||unv)?'w':'ok',ic={ok:'✔',w:'⚠',e:'✘',s:'⏭'};
  const msg=miss.length?`✘ Fichier incomplet : il manque ${miss.map(m=>MISS[m][0]).join(', ')}.`
   :bad.length?`⚠ Fichier généré, mais ${bad.length} test(s) en échec. Lis les « Comment réparer » ci-dessous.`
   :noProof?'⚠ Fichier généré, mais aucune œuvre ni aucun chapitre n\'a pu être lu : ce site n\'est probablement pas un site de lecture, ou il bloque le Hub.'
+  :unv?'⚠ Fichier généré, mais la liste de « Parcourir » n\'a pas pu être vérifiée : ouvre « 📱 Tester sur liseuse » avant de l\'installer.'
   :'✔ Fichier généré : tous les tests bloquants sont passés.';
  const why=info.ai?'Réglages établis par l\'IA.':'Réglages devinés sans IA (heuristiques)'+(info.aiWhy?' — '+H(info.aiWhy):'')+'.';
  const fixHtml=fix.length?`<div class="card" style="border-color:var(--a)"><b>🩹 Voilà ce que j'ai compris de ton code</b><ul style="margin:6px 0">${fix.map(r=>`<li class="${r[0]}">${ic[r[0]]} ${H(r[1])}</li>`).join('')}</ul></div>`:'';
  const inp=(id,l,v,ph)=>`<label>${l}</label><input id="${id}" value="${H(v)}" placeholder="${H(ph||'')}">`;
  const bwhy=chkBrowse(CFG.browse,c.base).why;
- $('#cout').innerHTML=`<div class="card"><div class="sh">${ico(c.base,32)}<div><b>${H(c.name)}</b><br><small>${H(c.base.replace(/^https?:\/\//,''))}</small></div><button class="b s" id="icb" style="margin-left:auto">⬇ Icône</button></div><p class="${k}" style="margin-top:0"><b>${H(msg)}</b></p>
+ $('#cout').innerHTML=`<div class="card"><div class="sh">${ico(c.base,32)}<div><b>${H(c.name)}</b><br><small>${H(c.base.replace(/^https?:\/\//,''))}</small></div><button class="b s" id="icb" style="margin-left:auto">⬇ Icône</button></div><p class="${k}" id="vd" style="margin-top:0"><b>${H(msg)}</b></p>
  ${miss.map(m=>`<span class="fx">🛠 Pour trouver ${H(MISS[m][0])} : ${H(MISS[m][1])}</span>`).join('')}
  <small>${why}</small>${c.engine&&ENGINES[c.engine]?`<p style="margin:6px 0">⚙ Moteur détecté : <b>${H(ENGINES[c.engine].label)}</b> — modèle éprouvé appliqué.</p>`:''}${info.aiWhy?fx(info.aiWhy):''}${explorationHtml(info.exploration)}${apisHtml(info.apis)}${fixHtml}${loopHtml(lp)}${bad.length&&info.ai?'<div class="row"><button class="b s" id="lpb">🔁 Relancer la correction automatique</button></div><div id="lpm"></div>':''}${propHtml()}
  <div class="row" style="margin-top:10px"><button class="b" id="dlb">⬇ Télécharger ${H(g.id)}.lua</button><button class="b" id="tsb">📱 Tester sur liseuse</button><button class="b s" id="cpb">Copier le code</button><button class="b s" id="vwb">Voir le code</button></div>
  <div id="rcv"></div><div id="ctl"></div>
- <details class="help" open><summary>Détail des tests (${tests.length})</summary><ul>${tests.map((r,i)=>`<li class="${r[0]}">${ic[r[0]]} ${H(r[1])}${r[0]=='e'||r[0]=='w'?`<div class="rep" data-ri="${i}"><button class="b s" type="button" data-rep="${i}">🪄 Réparer</button></div>`:''}${r[0]=='ok'?'':fx(r[1],r[0]=='e')}</li>`).join('')}</ul></details>
+ <details class="help" open><summary>Détail des tests (${tests.length})</summary><ul id="tl">${tests.map((r,i)=>`<li class="${r[0]}">${ic[r[0]]} ${H(r[1])}${r[0]=='e'||r[0]=='w'?`<div class="rep" data-ri="${i}"><button class="b s" type="button" data-rep="${i}">🪄 Réparer</button></div>`:''}${r[0]=='ok'?'':fx(r[1],r[0]=='e')}</li>`).join('')}</ul></details>
  ${helpHtml(k!='ok')}
  <details class="help" ${openAdv||miss.length?'open':''}><summary>Réglages détectés (avancé)</summary>
   <div class="row"><div>${inp('a_name','Nom affiché',c.name)}</div><div>${inp('a_lang','Langue',c.lang)}</div><div><label>Type</label><select id="a_type"><option value="novel" ${c.type=='novel'?'selected':''}>Roman</option><option value="manga" ${c.type=='manga'?'selected':''}>Manga</option></select></div></div>
@@ -2957,6 +2977,7 @@ function coverOf(img,b){if(!img)return'';
   if(u&&!/^data:/.test(u)&&!/placeholder|blank/i.test(u))return unnext(new URL(u,b+'/').href)}return''}
 
 // mêmes règles que parse_list du .lua généré
+window.__listItems=(d,c)=>listItems(d,c);
 function listItems(doc,c){const out=[],idx={};
  doc.querySelectorAll('a[href]').forEach(a=>{const h=a.getAttribute('href')||'';
   if(!c.list||!h.includes(c.list)||(c.chap&&h.includes(c.chap)))return;
@@ -3089,7 +3110,7 @@ function open(){
  const nmSw=`<div class="nm"><span${c.type=='manga'?' class="off"':''}>Romans</span> <span class="off">|</span> <span${c.type=='manga'?'':' class="off"'}>Mangas</span></div>`;
  const icons=f=>`<button class="ib" id="pvsb">${IC.search}</button>${f?`<button class="ib" id="pvf">${IC.filter}</button>`:''}<button class="ib">${IC.dots}</button>`;
  const ph=n=>H(initials(n));
- const errBox=(msg,extra)=>`<div class="err">${msg}<br><br>Pas de panique : ferme l'aperçu et colle le code de cette page dans « 🆘 Ça ne marche pas ? »${extra||''}.<br><br><button class="btn" id="pvfix">Fermer et corriger</button></div>`;
+ const errBox=(msg,extra)=>{try{pvFail(msg)}catch{}return `<div class="err">${msg}<br><br>Pas de panique : ferme l'aperçu et colle le code de cette page dans « 🆘 Ça ne marche pas ? »${extra||''}.<br><br><button class="btn" id="pvfix">Fermer et corriger</button></div>`};
  function openSearch(s){
   const ov=document.createElement('div');ov.className='ov';
   ov.innerHTML=`<div class="bx"><h4>Rechercher dans ${H(c.name)}</h4><input id="pvq" placeholder="Titre…" value="${H(term)}"><div class="br"><button id="pvqc">Annuler</button><button id="pvqo">Rechercher</button></div></div>`;
