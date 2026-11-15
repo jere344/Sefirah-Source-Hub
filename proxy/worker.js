@@ -1,7 +1,8 @@
 // Sefirah Source Hub — Cloudflare Worker : proxy de sites + Workers AI + relais « recevoir une source » sur la liseuse.
 // Ne contourne ni CAPTCHA, ni challenge Cloudflare, ni authentification, ni autre contrôle d'accès.
 // Binding Workers AI nommé AI. Binding KV nommé RELAY (pour « Envoyer à la liseuse »).
-// Variables facultatives : ALLOWED_ORIGIN, AI_MODEL, MAX_HTML_BYTES.
+// Variables facultatives : ALLOWED_ORIGIN, AI_MODEL, MAX_HTML_BYTES, AI_PROVIDER_ORDER.
+// Ordre conseillé : GEMINI,GROQ,CEREBRAS,OPENROUTER,WORKERS_AI (adapté aux secrets réellement configurés).
 const DEFAULT_MODEL = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
 const MAX_HTML_BYTES = 2_000_000;
 const RELAY_TTL = 600;
@@ -26,17 +27,28 @@ async function openaiCompat(url, key, model, messages, extra) {
 }
 function providers(env) {
   const list = [];
-  if (env.GEMINI_API_KEY) list.push({ name: 'Gemini', run: (m, e) => openaiCompat('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', e.GEMINI_API_KEY, e.GEMINI_MODEL || 'gemini-2.5-flash', m, { response_format: { type: 'json_object' } }) });
-  if (env.GROQ_API_KEY) list.push({ name: 'Groq', run: (m, e) => openaiCompat('https://api.groq.com/openai/v1/chat/completions', e.GROQ_API_KEY, e.GROQ_MODEL || 'llama-3.3-70b-versatile', m, { response_format: { type: 'json_object' } }) });
-  if (env.CEREBRAS_API_KEY) list.push({ name: 'Cerebras', run: (m, e) => openaiCompat('https://api.cerebras.ai/v1/chat/completions', e.CEREBRAS_API_KEY, e.CEREBRAS_MODEL || 'llama-3.3-70b', m) });
-  if (env.OPENROUTER_API_KEY) list.push({ name: 'OpenRouter', run: (m, e) => openaiCompat('https://openrouter.ai/api/v1/chat/completions', e.OPENROUTER_API_KEY, e.OPENROUTER_MODEL || 'meta-llama/llama-3.3-70b-instruct:free', m) });
-  if (env.AI) list.push({ name: 'Workers AI', run: async (m, e) => {
-    const res = await e.AI.run(e.AI_MODEL || DEFAULT_MODEL, { messages: m, max_tokens: 1600 });
+  if (env.GEMINI_API_KEY) { const model = env.GEMINI_MODEL || 'gemini-2.5-flash'; list.push({ name: 'Gemini', model, run: (m, e) => openaiCompat('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', e.GEMINI_API_KEY, model, m, { response_format: { type: 'json_object' } }) }); }
+  if (env.GROQ_API_KEY) { const model = env.GROQ_MODEL || 'llama-3.3-70b-versatile'; list.push({ name: 'Groq', model, run: (m, e) => openaiCompat('https://api.groq.com/openai/v1/chat/completions', e.GROQ_API_KEY, model, m, { response_format: { type: 'json_object' } }) }); }
+  if (env.CEREBRAS_API_KEY) { const model = env.CEREBRAS_MODEL || 'llama-3.3-70b'; list.push({ name: 'Cerebras', model, run: (m, e) => openaiCompat('https://api.cerebras.ai/v1/chat/completions', e.CEREBRAS_API_KEY, model, m) }); }
+  if (env.OPENROUTER_API_KEY) { const model = env.OPENROUTER_MODEL || 'meta-llama/llama-3.3-70b-instruct:free'; list.push({ name: 'OpenRouter', model, run: (m, e) => openaiCompat('https://openrouter.ai/api/v1/chat/completions', e.OPENROUTER_API_KEY, model, m) }); }
+  if (env.AI) { const model = env.AI_MODEL || DEFAULT_MODEL; list.push({ name: 'Workers AI', model, run: async (m, e) => {
+    const res = await e.AI.run(model, { messages: m, max_tokens: 2200, temperature: 0.1 });
     let a = res && (res.response ?? res.output_text ?? res.text);
     if (a && typeof a === 'object') a = JSON.stringify(a);
     return typeof a === 'string' ? a.trim() : '';
-  } });
-  return list;
+  } }); }
+  // L'administrateur peut adapter l'ordre sans modifier le code ni exposer de clé côté navigateur.
+  const order = String(env.AI_PROVIDER_ORDER || 'GEMINI,GROQ,CEREBRAS,OPENROUTER,WORKERS_AI').split(',').map(x => x.trim().toUpperCase().replace(/\s+/g, '_'));
+  const rank = name => { const i = order.indexOf(name.toUpperCase().replace(/\s+/g, '_')); return i < 0 ? 999 : i; };
+  return list.sort((a,b) => rank(a.name) - rank(b.name));
+}
+function validJsonAnswer(raw) {
+  if (typeof raw !== 'string' || !raw.trim()) return false;
+  let t = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  try { JSON.parse(t); return true; } catch {}
+  const a = t.indexOf('{'), b = t.lastIndexOf('}');
+  if (a < 0 || b <= a) return false;
+  try { JSON.parse(t.slice(a, b + 1)); return true; } catch { return false; }
 }
 
 function json(data, status, cors) {
@@ -154,13 +166,15 @@ export default {
       for (const p of providers(env)) {
         try {
           const text = await p.run(messages, env);
-          if (text) return json({ text, provider: p.name }, 200, cors);
-          errors.push(p.name + ' : réponse vide');
+          if (!text) { errors.push(p.name + ' : réponse vide'); continue; }
+          // Le navigateur attend du JSON : une réponse mal formée ne doit pas empêcher l'essai du modèle suivant.
+          if (!validJsonAnswer(text)) { errors.push(p.name + ' : JSON invalide'); continue; }
+          return json({ text, provider: p.name, model: p.model || 'modèle non indiqué' }, 200, cors);
         } catch (e) {
           errors.push(p.name + ' : ' + String(e && e.message || e).slice(0, 120));
         }
       }
-      return json({ error: 'Toutes les IA ont échoué. ' + errors.join(' | ') }, 502, cors);
+      return json({ error: 'Toutes les IA ont échoué. ' + errors.join(' | '), attempts: errors }, 502, cors);
     }
 
     if (req.method !== 'GET') return json({ error: 'method_not_allowed' }, 405, cors);
