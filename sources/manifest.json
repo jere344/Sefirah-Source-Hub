@@ -360,6 +360,18 @@
       "icon": "sources/icons/skynovels.png"
     },
     {
+      "id": "sushiscan",
+      "name": "SushiScan",
+      "lang": "fr",
+      "type": "manga",
+      "site": "https://sushiscan.net",
+      "version": "0.1.0",
+      "license": "GPL-3.0",
+      "lastCheck": "2026-11-15",
+      "file": "sources/sushiscan.lua",
+      "icon": "sources/icons/sushiscan.png"
+    },
+    {
       "id": "truyendichai",
       "name": "TruyenDichAI",
       "lang": "vi",
