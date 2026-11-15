@@ -1,6 +1,7 @@
 // Sefirah Source Hub — Cloudflare Worker : proxy de sites + Workers AI + relais « recevoir une source » sur la liseuse.
 // Ne contourne ni CAPTCHA, ni challenge Cloudflare, ni authentification, ni autre contrôle d'accès.
 // Binding Workers AI nommé AI. Binding KV nommé RELAY (pour « Envoyer à la liseuse »).
+// Étape 2 (navigateur JavaScript, route /render) : secrets CF_ACCOUNT_ID et CF_API_TOKEN (jeton avec la permission « Browser Rendering - Edit »).
 // Variables facultatives : ALLOWED_ORIGIN, AI_MODEL, MAX_HTML_BYTES, AI_PROVIDER_ORDER.
 // Ordre conseillé : GEMINI,GROQ,CEREBRAS,OPENROUTER,WORKERS_AI (adapté aux secrets réellement configurés).
 const DEFAULT_MODEL = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
@@ -95,6 +96,58 @@ function validTarget(raw) {
   return u;
 }
 
+
+// === Étape 2 : vrai navigateur JavaScript (Cloudflare Browser Rendering, API REST « /content ») ===
+// Ouvre la page dans un Chrome distant, attend la fin des requêtes réseau puis renvoie le HTML FINAL (après JavaScript).
+// Ne contourne rien : Cloudflare identifie toujours ce navigateur comme un robot (l'option userAgent n'y change rien).
+// Plan gratuit Cloudflare : 10 minutes de navigateur par jour et 1 requête toutes les 10 secondes -> les pages rendues sont mises 1 h en cache (KV RELAY si présent).
+async function sha256Hex(s) {
+  const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+  return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join('');
+}
+async function renderSite(raw, wait, env, cors) {
+  const target = validTarget(raw);
+  if (!target) return json({ error: 'URL refusée : seuls les sites HTTP(S) publics sur les ports standards sont autorisés.' }, 400, cors);
+  if (!env.CF_ACCOUNT_ID || !env.CF_API_TOKEN) return json({ error: 'Navigateur JavaScript non configuré : ajoute les secrets CF_ACCOUNT_ID et CF_API_TOKEN au Worker.' }, 501, cors);
+  const waitUntil = ['load', 'domcontentloaded', 'networkidle0', 'networkidle2'].includes(wait) ? wait : 'networkidle2';
+  const htmlHeaders = extra => ({ ...cors, 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', ...extra });
+  let key = '';
+  if (env.RELAY) {
+    try {
+      key = 'rd:' + await sha256Hex(target.href + '|' + waitUntil);
+      const hit = await env.RELAY.get(key);
+      if (hit) return new Response(hit, { status: 200, headers: htmlHeaders({ 'X-Cache': 'HIT' }) });
+    } catch { key = ''; }
+  }
+  let r, txt;
+  try {
+    r = await fetch('https://api.cloudflare.com/client/v4/accounts/' + encodeURIComponent(env.CF_ACCOUNT_ID) + '/browser-rendering/content', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + env.CF_API_TOKEN },
+      body: JSON.stringify({ url: target.href, gotoOptions: { waitUntil, timeout: 30000 }, rejectResourceTypes: ['image', 'media', 'font'] }),
+      signal: AbortSignal.timeout(55000)
+    });
+    txt = await r.text();
+  } catch (e) {
+    return json({ error: 'Navigateur JavaScript injoignable : ' + String(e && e.message || e).slice(0, 160) }, 502, cors);
+  }
+  let j = null;
+  try { j = JSON.parse(txt); } catch {}
+  if (!r.ok || (j && j.success === false)) {
+    const msg = j && Array.isArray(j.errors) && j.errors.length ? j.errors.map(x => x.message || x.code).join(' ; ') : txt.slice(0, 200);
+    if (r.status === 429) return json({ error: 'Limite du plan gratuit Cloudflare atteinte (1 page toutes les 10 s, 10 min de navigateur par jour). ' + msg.slice(0, 120) }, 429, cors);
+    if (r.status === 401 || r.status === 403) return json({ error: 'Jeton Cloudflare refusé : vérifie CF_API_TOKEN (permission « Browser Rendering - Edit ») et CF_ACCOUNT_ID. ' + msg.slice(0, 120) }, 502, cors);
+    return json({ error: 'Le navigateur n\'a pas pu ouvrir la page (HTTP ' + r.status + ') : ' + msg.slice(0, 160) }, 502, cors);
+  }
+  let html = '';
+  if (j && typeof j.result === 'string') html = j.result;
+  else if (j && j.result && typeof j.result.content === 'string') html = j.result.content;
+  else if (!j && /^\s*</.test(txt)) html = txt;
+  if (!html) return json({ error: 'Réponse du navigateur illisible.' }, 502, cors);
+  if (html.length > Number(env.MAX_HTML_BYTES || MAX_HTML_BYTES)) return json({ error: 'Page rendue trop volumineuse pour être analysée.' }, 413, cors);
+  if (key && html.length > 500) { try { await env.RELAY.put(key, html, { expirationTtl: 3600 }); } catch {} }
+  return new Response(html, { status: 200, headers: htmlHeaders({ 'X-Cache': 'MISS' }) });
+}
 
 // === Exploration v1 : première brique du futur navigateur Sefirah ===
 // Explore quelques pages publiques en HTML statique. N'exécute pas JavaScript.
@@ -197,6 +250,7 @@ export default {
       'Access-Control-Allow-Origin': allowed === '*' || !origin || origin === allowed ? (allowed === '*' ? '*' : allowed) : 'null',
       'Access-Control-Allow-Headers': 'content-type',
       'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+      'Access-Control-Expose-Headers': 'X-Cache',
       'Vary': 'Origin'
     };
     if (req.method === 'OPTIONS') return new Response(null, { headers: cors });
@@ -207,6 +261,11 @@ export default {
     if (u.pathname === '/explore') {
       if (req.method !== 'GET') return json({ error: 'method_not_allowed' }, 405, cors);
       return exploreSite(u.searchParams.get('url') || '', cors);
+    }
+    if (u.pathname === '/render') {
+      if (req.method !== 'GET') return json({ error: 'method_not_allowed' }, 405, cors);
+      if (u.searchParams.get('check') === '1') return json({ render: !!(env.CF_ACCOUNT_ID && env.CF_API_TOKEN) }, 200, cors);
+      return renderSite(u.searchParams.get('url') || '', u.searchParams.get('wait') || '', env, cors);
     }
 
     if (u.pathname === '/ai') {
