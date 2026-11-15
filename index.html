@@ -60,8 +60,8 @@ h2.st{font-size:16px;margin:16px 0 4px}h2.st span{display:inline-grid;place-item
 <section id="catalogue"><div class="row"><input id="cq" placeholder="Rechercher un nom…"><select id="cl"><option value="">Toutes langues</option></select><select id="ct"><option value="">Tous types</option><option>novel</option><option>manga</option></select><select id="cs"><option value="">Tout statut</option><option value="non vérifié">non vérifié</option><option value="testé">testé</option></select></div>
 <small id="cn"></small><div class="grid" id="cg"></div>
 <details class="card" id="mem" style="margin-top:14px"><summary><b>🎓 Mémoire de l'IA</b> <small id="memn"></small></summary>
-<p style="margin:8px 0"><small>L'IA apprend toute seule, en arrière-plan : elle lit les sources du catalogue (une seule fois par version) et retient chaque réparation réussie dans ce navigateur. Le bouton ci-dessous ne sert que pour un fichier .lua qui n'est pas dans le catalogue.</small></p>
-<div class="row"><button class="b" type="button" id="memlua">📥 Apprendre d'un fichier .lua (hors catalogue)</button><button class="b s" type="button" id="memexp">⬇ Exporter la mémoire</button><button class="b s" type="button" id="memclr">🗑 Oublier ce navigateur</button><input type="file" id="memf" accept=".lua" multiple style="display:none"></div>
+<p style="margin:8px 0"><small>L'IA apprend des extensions marquées comme testées, extrait leurs méthodes (moteur, API, pagination, lecture et pièges), puis réutilise les exemples pertinents pendant les prochaines générations. La mémoire reste dans ce navigateur ; exporte-la et partage le JSON pour transmettre les connaissances à un autre appareil ou utilisateur.</small></p>
+<div class="row"><button class="b" type="button" id="memlua">📥 Apprendre des fichiers .lua</button><button class="b s" type="button" id="memimp">📤 Importer une mémoire</button><button class="b s" type="button" id="memexp">⬇ Exporter la mémoire collective</button><button class="b s" type="button" id="memclr">🗑 Oublier ce navigateur</button><input type="file" id="memf" accept=".lua" multiple style="display:none"><input type="file" id="memjson" accept=".json,application/json" style="display:none"></div>
 <small id="memout"></small></details></section>
 
 
@@ -206,21 +206,67 @@ const hookIco=r=>r.querySelectorAll('img.ico').forEach(i=>i.addEventListener('er
 function memInfo(){const e=$('#memn');if(e){const l=KBL(),n=(l.examples||[]).length+(l.lecons||[]).length,a=Object.keys(KBA().items||{}).length;
  e.textContent='('+KB.length+' sources, '+LECONS.length+' leçons'+(a?', '+a+' lues automatiquement':'')+(n?', '+n+' apprises ici':'')+(AUTOST&&AUTOST.done<AUTOST.total?' · lecture en cours '+AUTOST.done+'/'+AUTOST.total:'')+')'}}
 function luaLesson(name,code){
- const g=(k)=>{const m=code.match(new RegExp('^local\\s+'+k+'\\s*=\\s*"([^"]*)"','m'));return m?m[1]:''};
- const id=(code.match(/\bid\s*=\s*"([a-z0-9_-]+)"/)||[])[1]||name.replace(/\.lua$/i,'').toLowerCase().replace(/[^a-z0-9]/g,'');
- const manga=/type\s*=\s*"manga"/.test(code)||/parseChapterImages/.test(code);
- const moteur=/__next_f|__NEXT_DATA__/.test(code)?'next':/wp-manga|madara/i.test(code)?'madara':/wp-json/.test(code)?'wpjson':'';
+ const g=(k)=>{const m=code.match(new RegExp("^local\\\\s+"+k+"\\\\s*=\\\\s*[\"']([^\"']*)[\"']","m"));return m?m[1]:''};
+ const id=(code.match(/\bid\s*=\s*["']([a-z0-9_-]+)["']/i)||[])[1]||name.replace(/\.lua$/i,'').toLowerCase().replace(/[^a-z0-9_-]/g,'').slice(0,40);
+ const manga=/type\s*=\s*["']manga["']/.test(code)||/parseChapterImages/.test(code);
+ const moteur=/__next_f|__NEXT_DATA__|next\/data/i.test(code)?'next':/wp-manga|madara/i.test(code)?'madara':/wp-json|wp\/v2/i.test(code)?'wpjson':/api\/trpc|trpc/i.test(code)?'trpc':/graphql/i.test(code)?'graphql':/api\//i.test(code)?'api':'';
  const cfg={type:manga?'manga':'novel'};
  [['search','SEARCH'],['list','LISTP'],['chap','CHAPP'],['cont','CONT']].forEach(([a,b])=>{const v=g(b);if(v)cfg[a]=v});
  if(moteur==='next')cfg.next=true;
- const pieges=code.split('\n').filter(l=>/^\s*--/.test(l)&&/(piège|attention|important|bug|403|429|cloudflare|verrou|premium|lazy|data-src|limite|brouill|API|JSON)/i.test(l)&&!/GPL|FORK|fork/.test(l)).map(l=>l.replace(/^\s*--+\s*/,'').slice(0,140)).slice(0,6);
- return{id,moteur,type:cfg.type,signature:moteur==='next'?'self.__next_f':moteur==='madara'?'wp-manga':moteur==='wpjson'?'/wp-json/':'',structure:'',pieges,config:cfg,local:true}}
+ const lines=code.split('\n');
+ const comments=lines.filter(l=>/^\s*--/.test(l)).map(l=>l.replace(/^\s*--+\s*/,'').trim()).filter(Boolean);
+ const pieges=comments.filter(l=>/(piège|attention|important|bug|403|429|cloudflare|verrou|premium|lazy|data-src|limite|brouill|API|JSON|pagination|chapitre|contenu)/i.test(l)&&!/GPL|FORK|fork/i.test(l)).map(l=>l.slice(0,180)).slice(0,8);
+ const patterns=[];
+ if(/data-src|data-lazy-src/.test(code))patterns.push('Images/couvertures en lazy-loading : vérifier data-src et data-lazy-src avant src.');
+ if(/__NEXT_DATA__|self\.__next_f/.test(code))patterns.push('Données Next.js embarquées : inspecter le JSON serveur avant de parser le HTML rendu.');
+ if(/wp-json|wp\/v2/.test(code))patterns.push('WordPress REST : rechercher une API wp-json avant de scraper les cartes HTML.');
+ if(/api\/trpc|trpc/.test(code))patterns.push('API tRPC détectée : inspecter les paramètres JSON encodés et la structure result.data.');
+ if(/graphql/i.test(code))patterns.push('API GraphQL détectée : identifier query/variables et la pagination.');
+ if(/offset|skip|cursor|page\s*=|per_page|limit/.test(code))patterns.push('Pagination détectée : vérifier si toutes les pages/tranches sont chargées et dédoublonnées.');
+ if(/parseChapterImages/.test(code))patterns.push('Extension manga : récupération des pages/images de chapitre.');
+ if(/parseNovel|chapter|chapitre/i.test(code))patterns.push('Fonctions de lecture de chapitre détectées.');
+ const routes=[...new Set((code.match(/["'`](\/(?:api|wp-json|search|novel|chapter|manga|series|novels?)[^"'`\s]*)["'`]/gi)||[]).map(x=>x.slice(1,-1)).slice(0,12))];
+ const structure=[...patterns,...(routes.length?['Routes observées dans le code : '+routes.join(' ; ')]:[])].join(' ');
+ return{id,moteur,type:cfg.type,signature:moteur==='next'?'self.__next_f':moteur==='madara'?'wp-manga':moteur==='wpjson'?'/wp-json/':moteur==='trpc'?'api/trpc':moteur==='graphql'?'graphql':'',structure,pieges,config:cfg,patterns,local:true,learnedFrom:'lua',learnedAt:new Date().toISOString().slice(0,10)};
+}
 $('#memlua').onclick=()=>$('#memf').click();
+$('#memimp').onclick=()=>$('#memjson').click();
+// Fusionne une mémoire importée sans écraser les connaissances déjà présentes.
+// Les données importées sont des exemples à étudier, jamais du code exécuté.
+$('#memjson').onchange=async e=>{
+ const f=e.target.files&&e.target.files[0];if(!f)return;
+ try{
+  const j=JSON.parse(await f.text());
+  if(!j||!Array.isArray(j.examples))throw new Error('Le fichier ne contient pas de liste examples valide.');
+  const l=KBL(),byId=new Map((l.examples||[]).map(x=>[x.id,x]));
+  let added=0;
+  j.examples.forEach(x=>{
+   if(!x||typeof x!=='object'||!/^[a-z0-9][a-z0-9_-]{1,39}$/i.test(String(x.id||'')))return;
+   const safe={id:String(x.id),moteur:String(x.moteur||'').slice(0,30),type:x.type==='manga'?'manga':'novel',
+    signature:String(x.signature||'').slice(0,100),structure:String(x.structure||'').slice(0,1200),
+    pieges:Array.isArray(x.pieges)?x.pieges.filter(v=>typeof v==='string').slice(0,10).map(v=>v.slice(0,220)):[],
+    config:x.config&&typeof x.config==='object'?x.config:{type:x.type==='manga'?'manga':'novel'},
+    patterns:Array.isArray(x.patterns)?x.patterns.filter(v=>typeof v==='string').slice(0,12).map(v=>v.slice(0,220)):[],
+    imported:true};
+   byId.set(safe.id,safe);added++;
+  });
+  l.examples=[...byId.values()].slice(-250);
+  const known=new Set((l.lecons||[]).map(x=>String(x.symptome)+'|'+String(x.solution)));
+  (Array.isArray(j.lecons)?j.lecons:[]).slice(0,300).forEach(x=>{
+   if(!x||typeof x.symptome!=='string'||typeof x.solution!=='string')return;
+   const key=x.symptome+'|'+x.solution;if(known.has(key))return;
+   l.lecons.push({symptome:x.symptome.slice(0,120),cause:String(x.cause||'').slice(0,200),solution:x.solution.slice(0,240),imported:true});known.add(key);
+  });
+  LS.set('kb_local',l);mergeKB();
+  $('#memout').textContent='✔ Mémoire importée : '+added+' exemple(s) fusionné(s). Relance une analyse pour que les exemples pertinents soient utilisés.';
+ }catch(err){$('#memout').textContent='❌ Import impossible : '+err.message}
+ e.target.value='';
+};
 $('#memf').onchange=async e=>{const l=KBL();let n=0;
  for(const f of e.target.files){const t=await f.text();if(!/ext:(parseNovel|searchNovels)|function ext/.test(t)){continue}
   const x=luaLesson(f.name,t);l.examples=(l.examples||[]).filter(y=>y.id!==x.id).concat([x]);n++}
- LS.set('kb_local',l);loadKB();e.target.value='';$('#memout').textContent=n?('✔ '+n+' fichier(s) appris.'):'Aucun fichier d\'extension reconnu.'};
-$('#memexp').onclick=()=>dl('knowledge.json',JSON.stringify({version:1,updated:new Date().toISOString().slice(0,10),examples:KB.map(({local,...x})=>x),lecons:LECONS.map(({local,...x})=>x)},null,1));
+ LS.set('kb_local',l);mergeKB();e.target.value='';$('#memout').textContent=n?('✔ '+n+' fichier(s) appris.'):'Aucun fichier d\'extension reconnu.'};
+$('#memexp').onclick=()=>dl('sefirah-memoire-collective.json',JSON.stringify({version:2,format:'sefirah-source-hub-knowledge',updated:new Date().toISOString().slice(0,10),examples:KB.map(({local,...x})=>x),lecons:LECONS.map(({local,...x})=>x)},null,1));
 $('#memclr').onclick=()=>{if(confirm('Oublier ce que l\'IA a appris dans ce navigateur ? (les connaissances du site restent)')){localStorage.removeItem('kb_local');localStorage.removeItem('kb_auto');loadKB();$('#memout').textContent='Mémoire locale effacée (elle se reconstruira toute seule au prochain chargement du site).'}};
 // ---------- 🎓 apprentissage automatique : en arrière-plan, l'IA lit toutes les sources du catalogue (testées) toute seule
 // une source n'est relue que si sa version change dans le manifeste ; rien n'est envoyé à un serveur, tout reste dans ce navigateur
