@@ -408,6 +408,18 @@
       "icon": "sources/icons/webtoon.png"
     },
     {
+      "id": "weebcentral",
+      "name": "WeebCentral",
+      "lang": "en",
+      "type": "manga",
+      "site": "https://weebcentral.com",
+      "version": "1.1.1",
+      "license": "GPL-3.0",
+      "lastCheck": "2026-11-15",
+      "file": "sources/weebcentral.lua",
+      "icon": "sources/icons/weebcentral.png"
+    },
+    {
       "id": "wordrain",
       "name": "Wordrain",
       "lang": "en",
