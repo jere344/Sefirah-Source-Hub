@@ -2108,7 +2108,7 @@ function renderResult(tests,info,openAdv){LASTT=tests;
  const bwhy=chkBrowse(CFG.browse,c.base).why;
  $('#cout').innerHTML=`<div class="card"><div class="sh">${ico(c.base,32)}<div><b>${H(c.name)}</b><br><small>${H(c.base.replace(/^https?:\/\//,''))}</small></div><button class="b s" id="icb" style="margin-left:auto">⬇ Icône</button></div><p class="${k}" style="margin-top:0"><b>${H(msg)}</b></p>
  ${miss.map(m=>`<span class="fx">🛠 Pour trouver ${H(MISS[m][0])} : ${H(MISS[m][1])}</span>`).join('')}
- <small>${why}</small>${c.engine&&ENGINES[c.engine]?`<p style="margin:6px 0">⚙ Moteur détecté : <b>${H(ENGINES[c.engine].label)}</b> — modèle éprouvé appliqué.</p>`:''}${info.aiWhy?fx(info.aiWhy):''}${apisHtml(info.apis)}${fixHtml}${loopHtml(lp)}${bad.length&&info.ai?'<div class="row"><button class="b s" id="lpb">🔁 Relancer la correction automatique</button></div><div id="lpm"></div>':''}${propHtml()}
+ <small>${why}</small>${c.engine&&ENGINES[c.engine]?`<p style="margin:6px 0">⚙ Moteur détecté : <b>${H(ENGINES[c.engine].label)}</b> — modèle éprouvé appliqué.</p>`:''}${info.aiWhy?fx(info.aiWhy):''}${explorationHtml(info.exploration)}${apisHtml(info.apis)}${fixHtml}${loopHtml(lp)}${bad.length&&info.ai?'<div class="row"><button class="b s" id="lpb">🔁 Relancer la correction automatique</button></div><div id="lpm"></div>':''}${propHtml()}
  <div class="row" style="margin-top:10px"><button class="b" id="dlb">⬇ Télécharger ${H(g.id)}.lua</button><button class="b" id="tsb">📱 Tester sur liseuse</button><button class="b s" id="cpb">Copier le code</button><button class="b s" id="vwb">Voir le code</button></div>
  <div id="rcv"></div><div id="ctl"></div>
  <details class="help" open><summary>Détail des tests (${tests.length})</summary><ul>${tests.map((r,i)=>`<li class="${r[0]}">${ic[r[0]]} ${H(r[1])}${r[0]=='e'||r[0]=='w'?`<div class="rep" data-ri="${i}"><button class="b s" type="button" data-rep="${i}">🪄 Réparer</button></div>`:''}${r[0]=='ok'?'':fx(r[1],r[0]=='e')}</li>`).join('')}</ul></details>
@@ -2337,6 +2337,79 @@ async function autoDiscover(org,hd,u,eng,say){
  if(!r&&!CFG.search){const s=await probeSearchHtml(org,CFG.lang,'');if(s){CFG.search=s;res.search=s;
   try{const q=await getPage(s.replace('{q}',encodeURIComponent(word)).replace('{page}','1'));if(q.status<400)r=await tryDoc(dom(q.text),'recherche')}catch{}}}
  return r||res}
+// Étape 2 — exploration approfondie avec preuves croisées (liste → fiches → chapitres → contenu)
+async function deepExplore(org,home,say){
+ const report={pages:0,lists:0,works:0,chapters:0,verified:false,route:'',kind:'',evidence:[],warnings:[]};
+ const docs=[{label:'accueil',doc:home}],seenDocs=new Set([locationKey(org+'/')]);
+ const addDoc=(label,d)=>{if(!d)return;const k=label+':'+(d.location||'');if(!seenDocs.has(k)){seenDocs.add(k);docs.push({label,doc:d})}};
+ // Explorer les pages de navigation repérées, puis les sitemaps si nécessaire.
+ try{const harvested=await harvestSources(org,home);harvested.slice(0,5).forEach((d,i)=>addDoc('liste '+(i+1),d))}catch(e){report.warnings.push('Listes secondaires : '+String(e.message||e).slice(0,100))}
+ try{const sm=await sitemapDoc(org);if(sm)addDoc('sitemap',sm)}catch{}
+ report.pages=docs.length;
+ const candidates=[];
+ for(const entry of docs){
+  const groups=workGroups(entry.doc,org);
+  for(const [prefix,paths] of groups){
+   const counts={};paths.map(x=>x.split(/[?#]/)[0]).forEach(x=>{const w=workOf(x);counts[w]=(counts[w]||0)+1});
+   const unique=Object.keys(counts).filter(x=>x&&x!='/').sort((a,b)=>counts[b]-counts[a]);
+   if(unique.length>=2)candidates.push({prefix,paths:unique,from:entry.label,frequency:unique.length});
+  }
+ }
+ // Les familles de routes sont évaluées sur plusieurs fiches, pas sur un seul lien chanceux.
+ candidates.sort((a,b)=>b.frequency-a.frequency);
+ const uniqueCandidates=[];const prefSeen=new Set();
+ for(const c of candidates){const k=c.prefix.toLowerCase();if(!prefSeen.has(k)){prefSeen.add(k);uniqueCandidates.push(c)}if(uniqueCandidates.length>=6)break}
+ report.lists=uniqueCandidates.length;
+ let best=null;
+ for(const cand of uniqueCandidates){
+  const workSamples=cand.paths.slice(0,Math.min(3,cand.paths.length));let validWorks=0,chapterEvidence=[];
+  for(const wp of workSamples){
+   say('Exploration approfondie : vérification de la fiche '+(validWorks+1)+'/'+workSamples.length+'…');
+   let raw;try{raw=await getPage(new URL(wp,org+'/').href)}catch{continue}
+   if(raw.status>=400||blocked(raw)||raw.text.length<400)continue;
+   const wd=dom(raw.text),title=wd.querySelector('h1')?.textContent?.trim()||wd.querySelector('title')?.textContent?.trim()||'';
+   if(!title)continue;validWorks++;
+   const frags=chapFrags(wd,org,wp);
+   if(frags.length)chapterEvidence.push({wp,title,frags:frags.slice(0,3)});
+  }
+  report.works=Math.max(report.works,validWorks);
+  const totalFrags=chapterEvidence.reduce((n,x)=>n+x.frags.length,0);
+  if(validWorks>=2&&chapterEvidence.length>=1){
+   const tested=[];
+   for(const w of chapterEvidence.slice(0,3)){for(const f of w.frags.slice(0,2)){
+    if(tested.length>=5)break;
+    const url=new URL(f.first,org+'/').href;
+    say('Exploration approfondie : test d’un chapitre réel…');
+    const kind=await probeChapter(url,org);
+    if(kind)tested.push({url,kind,from:w.title,chapter:f.chap,order:f.rev?'décroissant':'croissant'});
+   }if(tested.length>=5)break}
+   const novels=tested.filter(x=>x.kind.kind==='novel'),mangas=tested.filter(x=>x.kind.kind==='manga'),chosen=novels.length>=mangas.length?novels:mangas;
+   const score=validWorks*3+chapterEvidence.length*4+tested.length*5+(chosen.length?8:0);
+   if(!best||score>best.score)best={score,cand,validWorks,chapterEvidence,tested,chosen};
+  }
+ }
+ if(best){
+  report.works=best.validWorks;report.chapters=best.tested.length;
+  const good=best.chosen;const first=good[0];
+  if(first){
+   const same=good.filter(x=>x.kind.kind===first.kind.kind);
+   const common=new Map();same.forEach(x=>{const k=x.kind.cont||x.kind.img||'';if(k)common.set(k,(common.get(k)||0)+1)});
+   const selector=[...common].sort((a,b)=>b[1]-a[1])[0];
+   report.verified=same.length>=1;report.route=best.cand.prefix;report.kind=first.kind.kind;
+   report.evidence=[
+    best.validWorks+' fiches valides examinées sur '+Math.min(3,best.cand.paths.length),
+    best.chapterEvidence.length+' fiche(s) contiennent des liens de chapitres',
+    best.tested.length+' chapitre(s) ouvert(s) et analysé(s)',
+    selector?'Conteneur répété « '+selector[0]+' » sur '+selector[1]+'/'+same.length+' chapitre(s)':'Structure de lecture détectée sur '+same.length+' chapitre(s)'
+   ];
+   report.discovery={ok:true,list:best.cand.prefix,chap:best.chapterEvidence[0]?.frags[0]?.chap||'',rev:best.chapterEvidence[0]?.frags[0]?.rev||false,kind:first.kind.kind,cont:first.kind.cont||'',img:first.kind.img||'',found:best.tested.length+' chapitre(s) vérifié(s) sur '+best.validWorks+' fiches'};
+  }
+ }
+ if(!report.verified)report.warnings.push('Pas assez de pages accessibles pour confirmer une chaîne complète fiche → chapitre → lecture. Les résultats restent des hypothèses.');
+ return report;
+}
+function locationKey(u){try{return new URL(u).pathname.toLowerCase()}catch{return String(u)}}
+const explorationHtml=r=>!r?'':`<details class="card" open style="border-color:var(--a)"><summary><b>🧭 Exploration approfondie — ${r.verified?'résultats vérifiés':'vérification incomplète'}</b></summary><p><small>${r.pages} pages de navigation examinées · ${r.lists} familles de routes · ${r.works} fiches valides · ${r.chapters} chapitres ouverts</small></p>${r.route?`<p>Route d’œuvres retenue : <code>${H(r.route)}</code> · type : <b>${H(r.kind)}</b></p>`:''}${r.evidence.length?'<ul>'+r.evidence.map(x=>'<li class="ok">✔ '+H(x)+'</li>').join('')+'</ul>':''}${r.warnings.map(x=>'<p class="w">⚠ '+H(x)+'</p>').join('')}<small>Le Hub ne contourne pas les CAPTCHA, protections anti-bot, connexions ou paywalls. Une page bloquée n’est jamais considérée comme une preuve.</small></details>`;
 function applyDisc(d){if(!d||!d.ok)return;
  if(d.list)CFG.list=d.list;if(d.chap)CFG.chap=d.chap;CFG.rev=!!d.rev;
  if(d.kind=='manga'){CFG.type='manga';CFG.img=d.img||'';CFG.cont=''}
@@ -2435,8 +2508,12 @@ if(homeUrl&&homeUrl!==u){u=homeUrl;$('#cu').value=u}
 say("Recherche d'API cachées…");let apis=[];try{apis=await probeApis(org,hp.text,hd)}catch{}
   const eng=detectEngine(hp.text)||(apis.some(a=>a.id=='wpjson')?'wpjson':'');
   const platform=detectPlatform(hp.text);
-  DISCSKIP=new Set();DISCN=new Map();DISCW=new Set();let disc=null;
-  if(eng!='madara'&&eng!='wpjson'){say("Exploration du site : œuvre → chapitres → lecture…");try{disc=await autoDiscover(org,hd,u,eng,say);if(disc&&disc.ok)applyDisc(disc)}catch(e){console.warn('autoDiscover',e)}}
+  DISCSKIP=new Set();DISCN=new Map();DISCW=new Set();let disc=null,exploration=null;
+  if(eng!='madara'&&eng!='wpjson'){
+   say('Étape 2/5 : exploration approfondie des listes, fiches et chapitres…');
+   try{exploration=await deepExplore(org,hd,say);if(exploration&&exploration.discovery){disc=exploration.discovery;applyDisc(disc)}}catch(e){console.warn('deepExplore',e);exploration={pages:0,lists:0,works:0,chapters:0,verified:false,route:'',kind:'',evidence:[],warnings:['Exploration approfondie interrompue : '+String(e.message||e).slice(0,140)]}}
+   if(!disc){say('Exploration complémentaire : recherche d’une autre structure…');try{disc=await autoDiscover(org,hd,u,eng,say);if(disc&&disc.ok)applyDisc(disc)}catch(e){console.warn('autoDiscover',e)}}
+  }
   const hl=lnk(hd,org),lp0=CFG.list;
   // filtres vus sur l'accueil (selects, cases, liens répétés) : proposés à l'utilisateur, jamais ajoutés sans son choix (hors IA)
   try{DET=detectFilters(hd,org,u);PROP={list:DET.list.slice(),browse:DET.browse}}catch{}
