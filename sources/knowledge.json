@@ -722,6 +722,16 @@
    "symptome": "ts_reader|MangaThemesia|chapterlist|chapternum|Aucune image|no_pages|pages? manquantes?",
    "cause": "Site MangaThemesia/MangaStream : les images du chapitre sont dans le HTML et/ou dans le script ts_reader.run, et les chapitres dans #chapterlist.",
    "solution": "Lire les <img> du lecteur (data-src avant src) ET le tableau \"images\" de ts_reader.run({…}), garder la liste la plus longue ; pour les chapitres, parcourir uniquement #chapterlist (span.chapternum pour le titre) et inverser l'ordre s'il est décroissant ; envoyer Referer = site."
+  },
+  {
+   "symptome": "^Parcourir : la liste par défaut|Filtres : la liste filtrée",
+   "cause": "L'adresse « liste avec filtres » est fausse quand aucun filtre n'est choisi (le morceau ou le paramètre retiré change la page, ou le site renvoie 404/vide).",
+   "solution": "Comparer browse avec l'adresse réellement ouverte quand on clique « tous » sur le site ; garder les mots {clé} et {page} ; si aucune adresse sûre n'est visible, laisser browse tel quel plutôt que d'inventer."
+  },
+  {
+   "symptome": "Madara|wp-manga|manga-genre|m_orderby",
+   "cause": "Sites Madara : la liste passe par /manga/?m_orderby=…&page ou /manga-genre/<genre>/page/N/ ; une valeur « all » retire le morceau d'adresse.",
+   "solution": "Utiliser /manga/?m_orderby={tri} (liste par défaut) ; pour un genre, /manga-genre/{genre}/ ; vérifier qu'au moins une œuvre revient sans filtre."
   }
  ]
 }
