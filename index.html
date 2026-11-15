@@ -1581,7 +1581,7 @@ function jsCompare(sHtml,rHtml,org){
    liensListe:L.slice(0,30).map(x=>[x[0].slice(0,70),x[1].slice(0,25)]),
    titres:[...d.querySelectorAll('h1,h2,h3')].slice(0,6).map(x=>(x.textContent||'').trim().slice(0,50)).filter(Boolean)}};
  const s=one(sHtml),r=one(rHtml);
- const spa=(r.liens-s.liens>=8)||(r.texte>=1500&&r.texte>=s.texte*3)||(!s.modeles.length&&r.modeles.length>0);
+ const spa=(r.liens-s.liens>=8)||(r.texte-s.texte>=800&&r.texte>=s.texte*3)||(!s.modeles.length&&r.modeles.length>0);
  return {s,r,spa}}
 function jsReportHtml(c){
  if(!c)return '';
@@ -1589,7 +1589,7 @@ function jsReportHtml(c){
  const row=(t,x)=>`<tr><td>${t}</td><td>${x.liens}</td><td>${x.texte}</td><td>${x.modeles.length?x.modeles.map(m=>'<code>'+H(m.modele)+'</code> ×'+m.nb).join('<br>'):'—'}</td></tr>`;
  return `<details class="card" open style="border-color:var(--a)"><summary><b>🧭 Navigateur JavaScript — ${c.spa?'ce site a besoin de JavaScript':'le HTML brut suffit'}</b></summary>
 <div style="overflow-x:auto"><table><tr><th></th><th>Liens</th><th>Texte visible (car.)</th><th>Modèles de liens répétés</th></tr>${row('Sans JavaScript',c.s)}${row('Avec JavaScript',c.r)}</table></div>
-${c.spa?`<p class="w">⚠ Sans JavaScript la page montre ${c.s.liens} lien(s) ; avec JavaScript, ${c.r.liens}. Sefirah ne peut pas exécuter JavaScript sur la liseuse : la page rendue sert à comprendre le site, pas à le lire. Pour que la source marche sur Kobo, il faut une API JSON utilisée par le site (étape 3 de la feuille de route).</p>`:`<p class="ok">✔ Le HTML brut contient déjà l'essentiel : pas besoin de navigateur pour ce site.</p>`}
+${c.spa?`<p class="w">⚠ Sans JavaScript la page montre ${c.s.liens} lien(s) et ${c.s.texte} caractères de texte ; avec JavaScript, ${c.r.liens} lien(s) et ${c.r.texte} caractères. Sefirah ne peut pas exécuter JavaScript sur la liseuse : la page rendue sert à comprendre le site, pas à le lire. Pour que la source marche sur Kobo, il faut une API JSON utilisée par le site (étape 3 de la feuille de route).</p>`:`<p class="ok">✔ Le HTML brut contient déjà l'essentiel : pas besoin de navigateur pour ce site.</p>`}
 ${c.r.titres.length?'<small>Titres vus après rendu : '+c.r.titres.map(H).join(' · ')+'</small><br>':''}
 <small>Le navigateur est identifié comme robot : aucune protection (CAPTCHA, anti-bot, connexion) n'est contournée. Plan gratuit Cloudflare : 10 min de navigateur par jour.</small></details>`}
 async function jsCheck(){
