@@ -304,13 +304,13 @@ function mergeCat(man,com){
  const seen=new Set(),extra=(Array.isArray(com)?com:[]).filter(x=>ok(x)&&!seen.has(x.id)&&seen.add(x.id)).map(x=>({id:x.id,name:capName(t(x.name)||x.id),
   lang:/^([a-z]{2,3}|multi)$/.test(String(x.lang))?x.lang:'multi',type:x.type=='manga'?'manga':'novel',site:t(x.site,300),version:/^[\w.+-]{1,20}$/.test(String(x.version))?x.version:'0.1.0',
   license:'—',status:'non vérifié',lastCheck:'',file:PROXY+'/catalogue/file/'+x.id+'.lua',community:true}));
- return (man||[]).map(x=>({...x,status:'testé'})).concat(extra)}
+ return (man||[]).map(x=>({...x,status:x.status||'testé'})).concat(extra)}
 Promise.all([fetch('sources/manifest.json').then(r=>r.json()),
  fetch(PROXY+'/catalogue',{signal:AbortSignal.timeout?AbortSignal.timeout(6000):undefined}).then(r=>r.ok?r.json():{}).catch(()=>({}))]).then(([j,cm])=>{SRC=mergeCat(j.sources,cm&&cm.sources);[...new Set(SRC.map(s=>s.lang))].sort().forEach(l=>$('#cl').append(new Option(l,l)));cat();setTimeout(autoLearn,1500)}).catch(()=>$('#cn').textContent='Manifeste introuvable (ouvre le site via GitHub Pages ou un serveur local).');
 function cat(){const q=$('#cq').value.toLowerCase(),l=$('#cl').value,t=$('#ct').value,s=$('#cs').value;
  const L=SRC.filter(x=>(!q||x.name.toLowerCase().includes(q))&&(!l||x.lang==l)&&(!t||x.type==t)&&(!s||x.status==s));
  $('#cn').textContent=L.length+' source(s)';
- $('#cg').innerHTML=L.map(x=>`<div class="card">${ico(x.site)}<b>${H(x.name)}</b> <small>v${H(x.version)}</small><br><span class="tag">${H(x.lang)}</span><span class="tag">${H(x.type)}</span><span class="tag">${H(x.license)}</span><span class="tag ${x.status=='testé'?'ok':'w'}">${H(x.status)}</span><br><small><a href="${H(x.site)}" target="_blank" rel="noopener">${H(x.site)}</a><br>Dernière vérif. : ${x.lastCheck||'jamais'}</small>${x.community?"<br><small class=\"w\">Source de la communauté, non vérifiée : lis le code avant de l'installer.</small>":''}
+ $('#cg').innerHTML=L.map(x=>`<div class="card">${x.icon?`<img class="ico" width="20" height="20" alt="" loading="lazy" src="${H(x.icon)}">`:ico(x.site)}<b>${H(x.name)}</b> <small>v${H(x.version)}</small><br><span class="tag">${H(x.lang)}</span><span class="tag">${H(x.type)}</span><span class="tag">${H(x.license)}</span><span class="tag ${x.status=='testé'?'ok':'w'}">${H(x.status)}</span><br><small><a href="${H(x.site)}" target="_blank" rel="noopener">${H(x.site)}</a><br>Dernière vérif. : ${x.lastCheck||'jamais'}</small>${x.community?"<br><small class=\"w\">Source de la communauté, non vérifiée : lis le code avant de l'installer.</small>":''}
  <div class="row"><button class="b s" data-a="v" data-i="${x.id}">Code</button><button class="b s" data-a="d" data-i="${x.id}">Télécharger</button><button class="b s" data-a="c" data-i="${x.id}">Copier le lien</button></div></div>`).join('');hookIco($('#cg'))}
 ['cq','cl','ct','cs'].forEach(i=>$('#'+i).oninput=cat);
 $('#cg').onclick=async e=>{const b=e.target.closest('button');if(!b)return;const x=SRC.find(s=>s.id==b.dataset.i);
