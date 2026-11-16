@@ -205,6 +205,19 @@
       "icon": "sources/icons/mangadex.png"
     },
     {
+      "id": "mangakatana",
+      "name": "Mangakatana",
+      "lang": "en",
+      "type": "manga",
+      "site": "https://mangakatana.com",
+      "version": "0.5.0",
+      "license": "GPL-3.0",
+      "lastCheck": "2026-11-16",
+      "status": "non vérifié",
+      "file": "sources/mangakatana.lua",
+      "icon": "sources/icons/mangakatana.png"
+    },
+    {
       "id": "mangapill",
       "name": "MangaPill",
       "lang": "en",
